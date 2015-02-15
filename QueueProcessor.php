@@ -540,4 +540,14 @@ abstract class QueueProcessor {
     protected function getMaxNesting() {
         return $this->max_nesting;
     }
+
+
+    /**
+     * Set time of delay between retries (in microseconds).
+     * @param int $microseconds Delay value. Default to 500000 microseconds = 0.5 second.
+     */
+    protected function setRetriesDelay($microseconds = 0) {
+        $microseconds = (int) $microseconds;
+        $this->delay = ($microseconds > 0) ? $microseconds : $this->delay;
+    }
 }
