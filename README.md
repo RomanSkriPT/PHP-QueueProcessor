@@ -37,7 +37,7 @@ class YourCustomClass extends QueueProcessor {
     public function execute($data) {
         // Here, in you public method for executing request,
         // you pass the incoming data to _executeRequestInternal() method,
-        // which will handle the "queuing" and will call your implementation if _processRequest() method.
+        // which will handle the "queuing" and will call _processRequest() method.
         return $this->_executeRequestInternal($data);
     }
 
@@ -75,11 +75,17 @@ class YourCustomClass extends QueueProcessor {
 }
 ```
 
-From the sample code above you might noticed, that all behind the scene work is done in `_executeRequestInternal()` method. And you're right. This method handles all the "queueing" work and calls the `_processRequest()` method for processing of a single request data. The result of processing of your particular request you'll get in an array format:
+From the sample code above you might noticed, that all behind the scene work is done in `_executeRequestInternal()` method. And you're right. This method handles all the "queueing" work and calls your implementation of `_processRequest()` method for processing of a single request data. The result of processing of your particular request you'll get in an array format:
 ```
 $result = array(
+    // Status of request processing:
+    // whether or not it's succeeded to call _processRequest() with passed data).
     'success'        => FALSE,
+
+    // The result of request: data returned by _processRequest().
     'request_result' => NULL,
+
+    // To be described...
     'system'         => array(
         'msg'           => '',
         'queue_name'    => NULL
