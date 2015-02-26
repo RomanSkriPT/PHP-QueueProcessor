@@ -14,31 +14,34 @@ The real use case of such class is a class for API requests to a _Service_ which
 
 ###### THE CODE
 <hr/>
-So `YouCustomClass` extended from `QueueProcessor` should implement two methods:
-* `_getQueueStaticDataDirRoot()` - should return a string with a full path to a directory where `QueueProcessor` will create a 'queue_data' directory to store all queue data for `YouCustomClass`. You can return a `__DIR__` to store that data within a parent directory of your class.
-* `_processRequest($data)` - this is the main processing method of incoming data to `YouCustomClass` instance. This is where you should implement all the logic of processing of a single request data. This method will be executed when the turn of a given instance of `YouCustomClass` will come.
+So `YourCustomClass` extended from `QueueProcessor` should implement three methods:
+* `_processRequest($data)` - this is the main processing method of incoming data to `YourCustomClass` instance. This is where you should implement all the logic of processing of a single request `$data`. This method will be called by `_executeRequestInternal()` when the turn of a given instance of `YourCustomClass` will come.
+* `_getQueueStaticDataDirRoot()` - should return a string with a full path to a directory where `QueueProcessor` will create a directory to store all queue data for `YourCustomClass`. Simply return a `__DIR__` to store that data within a parent directory of your class.
+* `_addQueueLogMsg($msg)` - this is the logger. It's up to you turn it into a real logging method and write the logs, but `QueueProcessor` will use it to send a log messages about certain stages of execution process.
+* By the way (this is obvious, but I'll mention it anyway), if you'll define a `__construct()` method in your child class, you must call a parent construct method first, since `QueueProcessor` need to do some initialization.
 
-Thus here is a basic example of child class:
+Thus here is a basic example of a child class:
 ```PHP
-class YouCustomClass extends QueueProcessor {
+class YourCustomClass extends QueueProcessor {
+    public function __construct() {
+        parent::__construct();
+
+        // Your initialization code here.
+    }
 
     /**
      * Public execution callback.
      * @param mixed $data Request's data
-     * @return mixed
+     * @return array
      */
     public function execute($data) {
-        return $this->_processRequest($data);
+        // Here, in you public method for executing request,
+        // you pass the incoming data to _executeRequestInternal() method,
+        // which will handle the "queuing" and will call your implementation if _processRequest() method.
+        return $this->_executeRequestInternal($data);
     }
 
-    /**
-     * Return class' directory path.
-     * @return string
-     */
-    protected function _getQueueStaticDataDirRoot() {
-        return __DIR__;
-	}
-	  
+
     /**
      * Main request data processor.
      * @param mixed $data Request's data
@@ -51,5 +54,35 @@ class YouCustomClass extends QueueProcessor {
         
         return $result;
     }
+
+
+    /**
+     * Return class' directory path.
+     * @return string
+     */
+    protected function _getQueueStaticDataDirRoot() {
+        return __DIR__;
+    }
+
+
+    /**
+     * Save log.
+     * @param string $msg
+     */
+    protected function _addQueueLogMsg($msg) {
+        $this->addRealLog($msg);
+    }
 }
+```
+
+From the sample code above you might noticed, that all behind the scene work is done in `_executeRequestInternal()` method. And you're right. This method handles all the "queueing" work and calls the `_processRequest()` method for processing of a single request data. The result of processing of your particular request you'll get in an array format:
+```
+$result = array(
+    'success'        => FALSE,
+    'request_result' => NULL,
+    'system'         => array(
+        'msg'           => '',
+        'queue_name'    => NULL
+    ),
+);
 ```

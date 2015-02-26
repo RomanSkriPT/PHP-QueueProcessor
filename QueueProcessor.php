@@ -61,7 +61,7 @@ abstract class QueueProcessor {
      * Should be implemented in child classes.
      *
      * @param mixed $data Data of a single queue item that need to be precessed.
-     * @return string
+     * @return mixed
      */
     abstract protected function _processRequest($data);
 
