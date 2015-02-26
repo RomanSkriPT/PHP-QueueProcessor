@@ -76,19 +76,19 @@ class YourCustomClass extends QueueProcessor {
 ```
 
 From the sample code above you might noticed, that all behind the scene work is done in `_executeRequestInternal()` method. And you're right. This method handles all the "queueing" work and calls your implementation of `_processRequest()` method for processing of a single request data. The result of processing of your particular request you'll get in an array format:
-```
-$result = array(
+```PHP
+array(
     // Status of request processing:
-    // whether or not it's succeeded to call _processRequest() with passed data).
-    'success'        => FALSE,
+    // whether or not it's succeeded to call _processRequest() with passed data.
+    'success' => FALSE,
 
     // The result of request: data returned by _processRequest().
     'request_result' => NULL,
 
     // To be described...
-    'system'         => array(
-        'msg'           => '',
-        'queue_name'    => NULL
+    'system' => array(
+        'msg'        => '',
+        'queue_name' => NULL
     ),
 );
 ```
