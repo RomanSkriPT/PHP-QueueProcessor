@@ -1,37 +1,38 @@
 <?php
 /*
  * @package    QueueProcessor
- * @version    1.0.0
+ * @version    1.0.1
  * @author     Roman Skritskiy <romanskritskiy@gmail.com>
  */
 abstract class QueueProcessor {
-
+    // Queue data directory and files.
     private $_queue_data_dir     = 'queue_data';
     private $_status_file        = 'status.json';
     private $_queue_file         = 'queue.json';
     private $_queue_results_file = 'queue_results.json';
 
-    private $max_exec_time;
-    private $max_nesting         = 40;
-
     // Default delay time between retries of processing in microseconds (0.5 second by default).
-    private $delay               = 500000;
+    // Can be configured via setDelayTime() method.
+    private $delay             = 500000;
+
+    // Maximum number of recursive calls of request execution callback.
+    // By default, 40 retries with 0.5 second delay will give 20+ secs of total execution time.
+    // That's probably enough for the average usage. Can be configured via setMaxNesting() method.
+    private $max_nesting       = 40;
+
+    // Overall max execution time in seconds according to current PHP settings.
+    // Can be configured via setMaxExecTime() method, but no exceed the value of 'max_execution_time' in PHP.ini.
+    private $max_exec_time;
 
     protected $queue             = [];
     protected $queue_name;
-    protected $class_root;
     protected $start_time;
-    protected $recursion_count;
+    protected $recursion_count   = 0;
 
 
     public function __construct() {
         // Set overall max execution time in seconds according to current PHP setting value.
         $this->setMaxExecTime();
-
-        // Set maximum number of recursion calls of request execution callback.
-        // By default, 40 retries with 0.5 second delay will give around 20 secs of total execution time.
-        // That's probably enough for the average webserver.
-        $this->setMaxNesting();
 
         // Define & create a directory for QueueProcessor's system files within a specified by child class directory.
         $this->_queue_data_dir = $this->_getQueueStaticDataDirRoot() . "/{$this->_queue_data_dir}/";
@@ -49,21 +50,15 @@ abstract class QueueProcessor {
         if (!$this->_status_file || !$this->_queue_file || !$this->_queue_results_file) {
             throw new Exception("Unable to create QueueProcessor's system files.");
         }
+
+        $this->_addQueueLogMsg('Queue setup successful.');
     }
 
 
-    /*
-     * Get a directory's full path where 'queue_data' directory with all QueueProcessor's system files will be stored.
-     * This need to be implemented in child classes.
-     *
-     * @return string
-     */
-    abstract protected function _getQueueStaticDataDirRoot();
-
-
-    /*
+    /**
      * Process a single queue item.
-     * This need to be implemented in child classes.
+     * This is the main processing callback of incoming data. Will be executed later in _executeRequestInternal().
+     * Should be implemented in child classes.
      *
      * @param mixed $data Data of a single queue item that need to be precessed.
      * @return string
@@ -71,10 +66,31 @@ abstract class QueueProcessor {
     abstract protected function _processRequest($data);
 
 
-    /*
-     * Set s queue element name.
+    /**
+     * Get a directory's full path where 'queue_data' directory with all QueueProcessor's system files will be stored.
+     * Should be implemented in child classes.
+     *
+     * @return string
+     */
+    abstract protected function _getQueueStaticDataDirRoot();
+
+
+    /**
+     * Logging method.
+     * Should be implemented in child classes.
+     *
+     * @param string $msg The message about certain stage of execution process.
+     * @return mixed
+     */
+    abstract protected function _addQueueLogMsg($msg);
+
+
+    /**
+     * Set a queue element name.
+     * If needed should be called right after instantiation of child class, before execution method call.
      *
      * @param string $queue_name
+     * @return $this
      */
     public function setQueueName($queue_name) {
         $this->queue_name = (string) $queue_name;
@@ -83,15 +99,14 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Internal recursive processing callback of a queue item.
+     *
+     * @param mixed $data
+     * @return array
      */
     protected function _executeRequestInternal($data = array()) {
-        // Get start time of execution (first iteration on potential recursive cycle).
-        $this->start_time = $this->start_time ? : microtime(TRUE);
-
-        $this->recursion_count++;
-
+        // Default @return array
         $result = array(
             'success'        => FALSE,
             'request_result' => NULL,
@@ -101,39 +116,58 @@ abstract class QueueProcessor {
             ),
         );
 
+        // Get start time of execution (first iteration on potential recursive cycle).
+        $this->start_time = $this->start_time ?: microtime(TRUE);
+
+        // Count recursive calls.
+        $this->recursion_count++;
+
+        if ($this->recursion_count == 1) {
+            $this->_addQueueLogMsg('First attempt of processing of queue item data started.');
+        } else {
+            $this->_addQueueLogMsg('Attempt #'. $this->recursion_count .' of processing of queue item data started.');
+        }
 
         // Break execution if we reached max nesting calls (recursion) limit.
         if ($this->recursion_count > $this->getMaxNesting()) {
+            $this->_addQueueLogMsg('Number of max nesting calls is reached. Aborting processing.');
             $result['system']['msg'] = 'timeout';
 
             return $result;
         }
 
 
-        // Get status data (about "lock" for requests processing).
+        // Get status data (about the "lock" for new requests execution).
         $status = $this->getStatus();
 
         // Process request if currently no other requests are in work.
         if (empty($status['locked'])) {
+            $this->_addQueueLogMsg('Queue is open. Setting lock and proceeding the processing.');
+
             // Set lock (to prevent other requests execution).
             $this->setExecLock();
 
             // Define flag of change of queue list
             $isQueueUpdated = FALSE;
 
-            // Process current data (first request).
+            // Process current data (first attempt).
             if (!empty($data)) {
+                $this->_addQueueLogMsg('Incoming data was provided. Executing _processRequest() callback.');
+
                 try {
                     $result['request_result'] = $this->_processRequest($data);
                     $result['success']        = TRUE;
                 } catch (Exception $e) {
                     $result['system']['msg'] = $e->getMessage();
+                    $this->_addQueueLogMsg('An error occurred while processing incoming data via _processRequest() callback.');
                 }
             }
-            // Otherwise, process queue list.
+            // Otherwise, process the queue list.
             else {
-                // We have nothing to do if both $data and queue_name are empty.
-                if ($this->queue_name) {
+                // Get queue item data and process it, if a queue name was provided.
+                if (!empty($this->queue_name)) {
+                    $this->_addQueueLogMsg('A queue name ('. $this->queue_name .') was provided. Proceeding processing.');
+
                     // Get fresh queue list file data.
                     $queue = $this->getQueue(TRUE);
 
@@ -145,7 +179,7 @@ abstract class QueueProcessor {
                         foreach ($queue as $queue_name => $queue_data) {
                             $cycle_start_time = empty($cycle_time_log) ? $this->start_time : microtime(TRUE);
 
-                            // Terminate processing if 'max_exec_time' is reached or soon to be (according to average cycle time).
+                            // Terminate processing if max execution time is reached or soon to be (according to average cycle time).
                             $time_eplased   = ($cycle_start_time - $this->start_time);
                             $time_predicted = ($time_eplased + (array_sum($cycle_time_log) / count($cycle_time_log)));
                             if ($time_eplased >= $this->getMaxExecTime() || $time_predicted > $this->getMaxExecTime()) {
@@ -190,6 +224,7 @@ abstract class QueueProcessor {
                     }
                 }
                 else {
+                    $this->_addQueueLogMsg('Neither data nor queue name was provided. Removing lock and aborting processing.');
                     $result['system_message'] = 'no_data';
                 }
             }
@@ -224,9 +259,9 @@ abstract class QueueProcessor {
             // Run this callback again if this is a first attempt or no results yet.
             if ($shouldRunAgain) {
                 // Wait before next try.
-                usleep($this->delay);
+                usleep($this->getDelayTime());
 
-                // Process queue list
+                // Try to process queue list again.
                 $result = $this->_executeRequestInternal();
             }
         }
@@ -235,11 +270,12 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Get queue data
      *
-     * @param   bool    $getFresh   Flag to get data from queue file
-     * @return  array
+     * @param bool $getFresh Flag to get data from queue file
+     * @param null $queue_file_handle
+     * @return array
      */
     protected function getQueue($getFresh = FALSE, $queue_file_handle = NULL) {
         if ($getFresh) {
@@ -255,8 +291,11 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Add new queue item to queue file
+     *
+     * @param mixed $data
+     * @return bool
      */
     protected function addQueue($data) {
         // Open queue file
@@ -283,22 +322,25 @@ abstract class QueueProcessor {
             $result = FALSE;
         }
 
-        return $result;
+        return (bool) $result;
     }
 
 
-    /*
+    /**
      * Update queue list: merge updated processed queue with that currently stored in file.
+     *
+     * @return bool
      */
     protected function updateQueueList() {
         return $this->mergeJsonFileObjectData($this->_queue_file, $this->getQueue());
     }
 
 
-    /*
+    /**
      * Get status data
      *
-     * @return  array
+     * @param null $file_handle
+     * @return array
      */
     protected function getStatus($file_handle = NULL) {
         $status_data = (is_null($file_handle) ? file_get_contents($this->_status_file) : stream_get_contents($file_handle));
@@ -306,8 +348,10 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Set lock to prevent any parallel request processing
+     *
+     * @return bool
      */
     protected function setExecLock() {
         $file_handle = fopen($this->_status_file, "r+");
@@ -332,8 +376,10 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Remove lock to allow a new request to be processed
+     *
+     * @return bool
      */
     protected function removeExecLock() {
         $file_handle = fopen($this->_status_file, "r+");
@@ -358,8 +404,11 @@ abstract class QueueProcessor {
     }
 
 
-    /*
+    /**
      * Get result of processing of queue item from log file
+     *
+     * @param string $queue_name
+     * @return array
      */
     protected function getRequestProcessingResultFromLog($queue_name) {
         $result = array();
@@ -531,10 +580,8 @@ abstract class QueueProcessor {
      * @param int $value
      */
     protected function setMaxNesting($value = 0) {
-        $max_nesting = 0;
-        $xdebug_mnl = (int) ini_get('xdebug.max_nesting_level');
-
-        $this->max_nesting = ($xdebug_mnl && $this->max_nesting < $xdebug_mnl) ? $this->max_nesting : ($xdebug_mnl - 1);
+        $value = (int) $value;
+        $this->max_nesting = $value ? $value : $this->max_nesting;
     }
 
     protected function getMaxNesting() {
@@ -544,10 +591,17 @@ abstract class QueueProcessor {
 
     /**
      * Set time of delay between retries (in microseconds).
-     * @param int $microseconds Delay value. Default to 500000 microseconds = 0.5 second.
+     *
+     * @param int $microseconds The delay time in milliseconds. Must be not less than 0.01 sec.
+     *                          Default to 500000 microseconds = 0.5 second.
      */
-    protected function setRetriesDelay($microseconds = 0) {
+    protected function setDelayTime($microseconds = 0) {
         $microseconds = (int) $microseconds;
-        $this->delay = ($microseconds > 0) ? $microseconds : $this->delay;
+        $this->delay = ($microseconds >= 10000)  ? $microseconds : $this->delay;
     }
+
+    protected function getDelayTime() {
+        return $this->delay;
+    }
+
 }
