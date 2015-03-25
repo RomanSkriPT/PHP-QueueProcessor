@@ -1,10 +1,13 @@
 <?php
 /*
  * @package    QueueProcessor
- * @version    1.0.1
+ * @version    1.0.2
  * @author     Roman Skritskiy <romanskritskiy@gmail.com>
  */
 abstract class QueueProcessor {
+    // Secret token for encryption of queued data.
+    private $secret_token = 'kiw5Nz0gPLm4b61s';
+
     // Queue data directory and files.
     private $_queue_data_dir     = 'queue_data';
     private $_status_file        = 'status.json';
@@ -180,20 +183,20 @@ abstract class QueueProcessor {
                             $cycle_start_time = empty($cycle_time_log) ? $this->start_time : microtime(TRUE);
 
                             // Terminate processing if max execution time is reached or soon to be (according to average cycle time).
-                            $time_eplased   = ($cycle_start_time - $this->start_time);
-                            $time_predicted = ($time_eplased + (array_sum($cycle_time_log) / count($cycle_time_log)));
-                            if ($time_eplased >= $this->getMaxExecTime() || $time_predicted > $this->getMaxExecTime()) {
+                            $time_elapsed   = ($cycle_start_time - $this->start_time);
+                            $time_predicted = ($time_elapsed + (array_sum($cycle_time_log) / count($cycle_time_log)));
+                            if ($time_elapsed >= $this->getMaxExecTime() || $time_predicted > $this->getMaxExecTime()) {
                                 $result['system']['msg']        = 'timeout';
                                 $result['system']['queue_name'] = $this->queue_name;
                                 break;
                             }
 
-                            // Actual processing of the request.
+                            // Process a single queue item.
+                            $_item_result = $_item_error = NUll;
                             try {
-                                $_result_raw       = $this->_processRequest($data);
-                                $result['success'] = TRUE;
+                                $_item_result = $this->_processRequest($this->decryptData($queue_data));
                             } catch (Exception $e) {
-                                $result['system']['msg'] = $e->getMessage();
+                                $_item_error = $e->getMessage();
                             }
 
                             // Delete queue item from list.
@@ -201,19 +204,28 @@ abstract class QueueProcessor {
 
                             // Break out, if this request's queue item was processed.
                             if ($queue_name == $this->queue_name) {
-                                $result['request_result'] = $_result_raw;
+                                if (is_null($_item_error)) {
+                                    $result['request_result'] = $_item_result;
+                                    $result['success'] = TRUE;
+                                } else {
+                                    $result['system']['msg'] = $_item_error;
+                                }
+
                                 break;
                             }
-                            // Log the result of queue item processing in cache queue results file.
+                            // Otherwise, log the result of queue item processing in cache 'queue results' file.
                             else {
-                                $this->addRequestProcessingResultToLog($this->queue_name, $_result_raw);
+                                $this->addRequestProcessingResultToLog(
+                                    $this->queue_name,
+                                    is_null($_item_error) ? $_item_result : $_item_error
+                                );
                             }
 
                             // Log duration of this iteration and set "change flag" of queue list
                             $cycle_time_log[] = (microtime(TRUE) - $cycle_start_time);
                             $isQueueUpdated   = TRUE;
                         }
-                        unset($queue_name, $queue_data, $cycle_time_log, $cycle_start_time, $time_eplased, $time_predicted);
+                        unset($queue_name, $queue_data, $cycle_time_log, $cycle_start_time, $time_elapsed, $time_predicted, $_item_result, $_item_error);
 
                         // Set updated queue data.
                         $this->setData('queue', $queue);
@@ -241,15 +253,15 @@ abstract class QueueProcessor {
         else {
             $shouldRunAgain = FALSE;
 
-            // Add data to the queue list if this is a first attempt.
+            // Add encrypted data to the queue list if this is a first attempt.
             if (!empty($data) && empty($this->queue_name)) {
-                $this->addQueue($data);
+                $this->addQueue($this->encryptData($data));
                 $shouldRunAgain = TRUE;
             }
             // Otherwise, check if there is a result of processing of this queue item in "queue results" file
             else {
                 $result['request_result'] = $this->getRequestProcessingResultFromLog($this->queue_name);
-                if (empty($result['request_result'])) {
+                if (is_null($result['request_result'])) {
                     $shouldRunAgain = TRUE;
                 } else {
                     $result['success'] = TRUE;
@@ -411,7 +423,7 @@ abstract class QueueProcessor {
      * @return array
      */
     protected function getRequestProcessingResultFromLog($queue_name) {
-        $result = array();
+        $result = NULL;
 
         if (!empty($queue_name)) {
             $queue_results = json_decode(file_get_contents($this->_queue_results_file), TRUE);
@@ -604,4 +616,35 @@ abstract class QueueProcessor {
         return $this->delay;
     }
 
+
+    /**
+     * Transform data into encrypted string.
+     *
+     * @param mix $data
+     * @return string
+     */
+    public function encryptData($data) {
+        $string = serialize($data);
+        $iv_size = mcrypt_get_iv_size(MCRYPT_BLOWFISH, MCRYPT_MODE_ECB);
+        $iv = mcrypt_create_iv($iv_size, MCRYPT_RAND);
+        $token = mcrypt_encrypt(MCRYPT_BLOWFISH, $this->secret_token, $string, MCRYPT_MODE_ECB, $iv);
+
+        return base64_encode($token);
+    }
+
+
+    /**
+     * Decrypt encrypted string
+     *
+     * @param string $string
+     * @return mixed
+     */
+    public function decryptData($string) {
+        $str = base64_decode($string);
+        $iv_size = mcrypt_get_iv_size(MCRYPT_BLOWFISH, MCRYPT_MODE_ECB);
+        $iv = mcrypt_create_iv($iv_size, MCRYPT_RAND);
+        $decrypted_string = mcrypt_decrypt(MCRYPT_BLOWFISH, $this->secret_token, $str, MCRYPT_MODE_ECB, $iv);
+
+        return unserialize($decrypted_string);
+    }
 }
